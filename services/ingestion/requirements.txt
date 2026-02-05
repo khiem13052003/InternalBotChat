@@ -1,0 +1,9 @@
+sentence-transformers
+unstructured[pdf]
+unstructured-inference
+pdfplumber
+pillow
+opencv-python-headless
+pytesseract
+pyvi
+spacy

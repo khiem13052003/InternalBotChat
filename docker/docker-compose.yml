@@ -1,0 +1,82 @@
+services:
+  qdrant:
+    build: ${HOST_VECTORDB_SERVICE_DIR}
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+
+  inference:
+    image: dustynv/mlc:0.20.0-r36.4.0
+    container_name: inference
+    runtime: nvidia
+    restart: unless-stopped
+    # Ghi chú: privileged thường không cần, nhưng mlc image đôi khi yêu cầu.
+    privileged: true
+    ipc: host
+    shm_size: '8g'
+    env_file:
+      - .env
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - TZ=Asia/Ho_Chi_Minh
+      - FORCE_CUDA=1
+    volumes:
+      - ${HOST_MODELS_DIR}:/inference/models:ro
+      - ${HOST_STORAGE_DIR}:/inference/storage
+      - rag_cache:/inference/.cache
+      - /etc/localtime:/etc/localtime:ro
+    working_dir: /inference
+    command:
+      - mlc_llm
+      - serve
+      - /inference/models/llm/tinyllama-1.1b-q4f16-MLC
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --overrides
+      - "max_num_sequence=1;max_total_seq_length=128;prefill_chunk_size=32;gpu_memory_utilization=0.4"
+    ports:
+      - "8000:8000"
+    ulimits:
+      memlock: -1
+      nofile: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:8000/v1/models || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+
+  ingestion:
+    build: ${HOST_INGESTION_SERVICE_DIR}
+    container_name: ingestion
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+      HF_TOKEN: ${HF_TOKEN}
+      ORT_DISABLE_GPU: "1"
+    volumes:
+      - ${HOST_STORAGE_DIR}:/ingestion/storage/
+      - ${HOST_MODELS_DIR}:/ingestion/models
+      - rag_cache:/ingestion/.cache
+    command: ["python", "app.py"]
+
+volumes:
+  rag_cache:
+  qdrant_storage:

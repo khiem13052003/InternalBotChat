@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.venv
+venv/
+
+# Models & data
+models/llm/*
+models/embedding/*
+storage/*
+!storage/.gitkeep
+
+# Docker
+docker/.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
