@@ -65,6 +65,9 @@ services:
   ingestion:
     build: ${HOST_INGESTION_SERVICE_DIR}
     container_name: ingestion
+    depends_on:
+      qdrant:
+        condition: service_healthy
     env_file:
       - .env
     environment:

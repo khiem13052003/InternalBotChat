@@ -10,6 +10,8 @@ venv/
 # Models & data
 models/llm/*
 models/embedding/*
+!models/embedding/.gitkeep
+!models/llm/.gitkeep
 storage/*
 !storage/.gitkeep
 

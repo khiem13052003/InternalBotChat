@@ -7,3 +7,4 @@ opencv-python-headless
 pytesseract
 pyvi
 spacy
+qdrant-client

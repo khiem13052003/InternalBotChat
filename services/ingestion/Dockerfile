@@ -12,6 +12,8 @@ WORKDIR /ingestion
 
 COPY requirements.txt .
 RUN pip install --upgrade pip
+RUN pip install torch
+RUN pip install numpy
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
