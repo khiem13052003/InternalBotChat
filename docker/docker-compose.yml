@@ -1,7 +1,6 @@
 services:
   qdrant:
     build: ${HOST_VECTORDB_SERVICE_DIR}
-    image: qdrant/qdrant:latest
     container_name: qdrant
     ports:
       - "6333:6333"   # REST API
@@ -79,6 +78,22 @@ services:
       - ${HOST_MODELS_DIR}:/ingestion/models
       - rag_cache:/ingestion/.cache
     command: ["python", "app.py"]
+
+
+  retrieval:
+    env_file:
+      - .env
+    build: ${HOST_RETRIEVAL_SERVICE_DIR}
+    container_name: retrieval
+    ports:
+      - "8001:8000"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - ${HOST_STORAGE_DIR}:/retrieval/storage/
+      - ${HOST_MODELS_DIR}:/retrieval/models
+      - rag_cache:/retrieval/.cache
 
 volumes:
   rag_cache:

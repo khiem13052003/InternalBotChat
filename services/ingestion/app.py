@@ -3,12 +3,14 @@ import spacy
 import hashlib
 import uuid
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct
-from sentence_transformers import SentenceTransformer, util
+from sentence_transformers import SentenceTransformer
 from unstructured.partition.pdf import partition_pdf
 from unstructured.documents.elements import NarrativeText, Title, ListItem
+import sentencepiece as spm
+import torch
 
 dir = r"./storage/data"
 #dir = r"D:\DaiHoc\folderrr"
@@ -18,19 +20,22 @@ class PdfChunks:
 
     def __init__(
         self,
-        model_name="intfloat/multilingual-e5-base",
+        llm_tokenizor_file_path="./models/llm/tinyllama-1.1b-q4f16-MLC/tokenizer.model",
+        embedding_model_path="./models/embedding/multilingual-e5-base",
         similarity_threshold=0.85,
         max_chars=900,
         overlap_sentences=2,
         min_overlap_sim=0.6,
         lang="vi",
-        vectorDB_url="http://qdrant:6333",
+        vectorDB_url="http://192.168.1.107:6333",
         vectorDB_collection_name="internal_docs",
         vectorDB_size=768,
-        upsert_batch_size=128,
+        upsert_batch_size=20,
     ):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.filter_elements = (NarrativeText, Title, ListItem)
-        self.embedding_model = SentenceTransformer(model_name, cache_folder="./models/embedding")
+        # embedding model
+        self.embedding_model = SentenceTransformer(embedding_model_path,device=self.device)
 
         self.similarity_threshold = similarity_threshold
         self.max_chars = max_chars
@@ -39,6 +44,8 @@ class PdfChunks:
 
         self.nlp = spacy.blank(lang)
         self.nlp.add_pipe("sentencizer")
+
+        self.tokenizor = spm.SentencePieceProcessor(model_file=llm_tokenizor_file_path)
 
         self.collection = vectorDB_collection_name
         self.client = QdrantClient(url=vectorDB_url)
@@ -57,15 +64,14 @@ class PdfChunks:
         return "\n".join(sents[-self.overlap_sentences:])
 
     def _hash(self, text):
-        return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
+        # use normalized text for stable hashing
+        normalized = " ".join(text.strip().split()).lower()
+        return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
     def _deterministic_chunk_id(self, document_id, chunk_index, content_hash):
-        # raw string to base the UUID on
         raw = f"{document_id}-{chunk_index}-{content_hash}"
-        # create a deterministic UUID (v5) using a namespace (NAMESPACE_URL chosen arbitrarily)
         u = uuid.uuid5(uuid.NAMESPACE_URL, raw)
-        return str(u)  # returns canonical UUID string
+        return str(u)
 
     def upsert_chunks(self, chunks):
         if not chunks:
@@ -78,25 +84,60 @@ class PdfChunks:
             )
             for c in chunks
         ]
+        # consider adding retry/backoff in production
         self.client.upsert(collection_name=self.collection, points=points)
 
-    def _flush_current(self, chunks, document_id, current_text, current_emb, chunk_index):
+    def _flush_current(self, chunks, filename, document_id, current_text, current_emb, chunk_index, page_number=None):
         # finalize current chunk (assumes current_emb is numpy array already normalized)
         content_hash = self._hash(current_text)
         chunk_id = self._deterministic_chunk_id(document_id, chunk_index, content_hash)
+        meta = {
+            # Identity
+            "document_id": document_id,
+            "chunk_id": chunk_id,
+            "chunk_index": chunk_index,
+
+            # Source
+            "source_file": filename,
+            "source_type": "None",
+            "page_number": page_number,
+
+            # Content
+            "language": "vi",
+            "content_hash": content_hash,
+            "num_tokens": len(self.tokenizor.Encode(current_text, out_type=int, add_bos=False, add_eos=False)),
+
+            # Versioning
+            "chunk_version": self.CHUNK_VERSION,
+            "embedding_model": "intfloat/multilingual-e5-base",
+            "embedding_version": "v1.0",
+            "index_name": "internal_docs_v1",
+
+            # Security / Access control
+            "access_level": "internal",
+            "departments": ["it", "security"],
+            "roles": ["employee"],
+
+            # Temporal
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+
+            # Trust & ranking signals
+            "is_authoritative": True,
+            "source_priority": 1,
+
+            # Ops
+            # "ingestion_job_id": job_id,
+            "ingested_by": "ingestion_service",
+        }
+
+        if page_number is not None:
+            meta["page_number"] = page_number
+
         chunks.append({
             "chunk_id": chunk_id,
             "content": current_text,
             "embedding": current_emb.tolist(),
-            "metadata": {
-                "source_file": document_id + ".pdf",
-                "document_id": document_id,
-                "chunk_index": chunk_index,
-                "language": "vi",
-                "chunk_version": self.CHUNK_VERSION,
-                "created_at": datetime.now().isoformat() + "Z",
-                "content_hash": content_hash,
-            }
+            "metadata": meta
         })
 
     def generation(self, folder_dir):
@@ -133,13 +174,17 @@ class PdfChunks:
                     chunks = []
 
                 text = e.text.strip()
-                emb = self.embedding_model.encode(text, normalize_embeddings=True)
+
+                # create embedding with passage: prefix
+                passage_input = f"passage: {text}"
+                emb = self.embedding_model.encode(passage_input, normalize_embeddings=True)
                 emb = np.array(emb, dtype=np.float32)
 
                 # Optional: force new chunk on Title elements
                 if isinstance(e, Title) and current_text:
                     # flush current chunk
-                    self._flush_current(chunks, document_id, current_text, current_emb, chunk_index)
+                    page_num = getattr(e.metadata, "page_number", None) if hasattr(e, "metadata") else None
+                    self._flush_current(chunks, filename, document_id, current_text, current_emb, chunk_index, page_num)
                     chunk_index += 1
                     # start new chunk with title text
                     current_text = text
@@ -153,14 +198,10 @@ class PdfChunks:
                     emb_count = 1
                     continue
 
-                # compute similarity between current_emb and new emb
-                # util.cos_sim returns torch tensor; convert to float
-                sim = util.cos_sim(current_emb, emb).item()
-
+                # compute similarity between current_emb and new emb (both numpy arrays, normalized)
+                sim = float(np.dot(current_emb, emb))
                 if (sim >= self.similarity_threshold and len(current_text) + len(text) <= self.max_chars):
-                    # incremental mean: update current_emb and emb_count
-                    # current_emb = (current_emb * emb_count + emb) / (emb_count + 1)
-                    # but re-normalize after averaging
+                    # incremental mean: update current_emb and emb_count, then renormalize
                     summed = current_emb * emb_count + emb
                     emb_count += 1
                     current_emb = summed / emb_count
@@ -170,22 +211,31 @@ class PdfChunks:
                         current_emb = current_emb / norm
                     current_text += "\n" + text
                 else:
-                    # flush old chunk
-                    self._flush_current(chunks, document_id, current_text, current_emb, chunk_index)
+                    # flush old chunk (include page number if available)
+                    page_num = getattr(e.metadata, "page_number", None) if hasattr(e, "metadata") else None
+                    self._flush_current(chunks, filename, document_id, current_text, current_emb, chunk_index, page_num)
                     chunk_index += 1
                     # build new chunk, include overlap if present
                     overlap = self._sentence_overlap(current_text)
                     if overlap:
-                        current_text = overlap + "\n" + text
-                        # recompute emb for overlap + new text: simple approach = mean(emb_overlap, emb)
-                        overlap_emb = self.embedding_model.encode(overlap, normalize_embeddings=True)
+                        # prepare overlap input with passage: prefix
+                        overlap_input = f"passage: {overlap}"
+                        overlap_emb = self.embedding_model.encode(overlap_input, normalize_embeddings=True)
                         overlap_emb = np.array(overlap_emb, dtype=np.float32)
-                        summed = overlap_emb + emb
-                        current_emb = summed / 2.0
-                        norm = np.linalg.norm(current_emb)
-                        if norm > 0:
-                            current_emb = current_emb / norm
-                        emb_count = 2
+                        # compute overlap similarity to new emb
+                        overlap_sim = float(np.dot(overlap_emb, emb))
+                        if overlap_sim >= self.min_overlap_sim:
+                            current_text = overlap + "\n" + text
+                            summed = overlap_emb + emb
+                            current_emb = summed / 2.0
+                            norm = np.linalg.norm(current_emb)
+                            if norm > 0:
+                                current_emb = current_emb / norm
+                            emb_count = 2
+                        else:
+                            current_text = text
+                            current_emb = emb
+                            emb_count = 1
                     else:
                         current_text = text
                         current_emb = emb
@@ -193,7 +243,8 @@ class PdfChunks:
 
             # flush final current chunk
             if current_text:
-                self._flush_current(chunks, document_id, current_text, current_emb, chunk_index)
+                # no page number for final chunk (could be last element's page if desired)
+                self._flush_current(chunks, filename, document_id, current_text, current_emb, chunk_index)
 
             # final upsert for document
             if chunks:
