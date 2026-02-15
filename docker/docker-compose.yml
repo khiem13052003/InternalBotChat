@@ -7,8 +7,7 @@ services:
       - "6334:6334"   # gRPC
     volumes:
       - qdrant_storage:/qdrant/storage
-    restart: unless-stopped
-
+    # restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
       interval: 10s
@@ -17,11 +16,11 @@ services:
       start_period: 20s
 
 
-  inference:
+  mlc:
     image: dustynv/mlc:0.20.0-r36.4.0
-    container_name: inference
+    container_name: mlc
     runtime: nvidia
-    restart: unless-stopped
+    # restart: unless-stopped
     # Ghi chú: privileged thường không cần, nhưng mlc image đôi khi yêu cầu.
     privileged: true
     ipc: host
@@ -33,26 +32,26 @@ services:
       - TZ=Asia/Ho_Chi_Minh
       - FORCE_CUDA=1
     volumes:
-      - ${HOST_MODELS_DIR}:/inference/models:ro
-      - ${HOST_STORAGE_DIR}:/inference/storage
-      - rag_cache:/inference/.cache
+      - ${HOST_MODELS_DIR}:/mlc/models:ro
+      - ${HOST_STORAGE_DIR}:/mlc/storage
+      - rag_cache:/mlc/.cache
       - /etc/localtime:/etc/localtime:ro
-    working_dir: /inference
-    command:
-      - mlc_llm
-      - serve
-      - /inference/models/llm/tinyllama-1.1b-q4f16-MLC
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --overrides
-      - "max_num_sequence=1;max_total_seq_length=128;prefill_chunk_size=32;gpu_memory_utilization=0.4"
+    working_dir: /mlc
     ports:
       - "8000:8000"
     ulimits:
       memlock: -1
       nofile: 65536
+    command:
+      - mlc_llm 
+      - serve 
+      - ./models/llm/Llama-3.2-1B-q4f16_1-MLC
+      - --host 
+      - 0.0.0.0
+      - --port 
+      - "8000"
+      - --overrides 
+      - "max_num_sequence=1;max_total_seq_length=2048;gpu_memory_utilization=0.5;prefill_chunk_size=64;"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://127.0.0.1:8000/v1/models || exit 1"]
       interval: 10s
@@ -74,10 +73,13 @@ services:
       HF_TOKEN: ${HF_TOKEN}
       ORT_DISABLE_GPU: "1"
     volumes:
-      - ${HOST_STORAGE_DIR}:/ingestion/storage/
+      - ${HOST_STORAGE_DIR}:/ingestion/storage
       - ${HOST_MODELS_DIR}:/ingestion/models
       - rag_cache:/ingestion/.cache
     command: ["python", "app.py"]
+    # command: ["tail", "-f", "/dev/null"]
+    # stdin_open: true
+    # tty: true
 
 
   retrieval:
@@ -94,6 +96,29 @@ services:
       - ${HOST_STORAGE_DIR}:/retrieval/storage/
       - ${HOST_MODELS_DIR}:/retrieval/models
       - rag_cache:/retrieval/.cache
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+
+  inference:
+    env_file:
+      - .env
+    build: ${HOST_INFERENCE_SERVICE_DIR}
+    container_name: inference
+    ports:
+      - "8002:8000"
+    depends_on:
+      mlc:
+        condition: service_healthy
+      retrieval:
+        condition: service_healthy
+    volumes:
+      - rag_cache:/inference/.cache
+
 
 volumes:
   rag_cache:

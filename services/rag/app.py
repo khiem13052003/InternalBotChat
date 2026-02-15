@@ -1,10 +1,8 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from retriever import Retriever
-from context_builder import ContextBuilder
 import os
 
-app = FastAPI(title="Internal RAG Retrieval Service")
+app = FastAPI(title="Internal RAG Service")
 
 retriever = Retriever()
 builder = ContextBuilder()

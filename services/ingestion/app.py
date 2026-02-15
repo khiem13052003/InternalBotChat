@@ -9,8 +9,8 @@ from qdrant_client.models import VectorParams, Distance, PointStruct
 from sentence_transformers import SentenceTransformer
 from unstructured.partition.pdf import partition_pdf
 from unstructured.documents.elements import NarrativeText, Title, ListItem
-import sentencepiece as spm
 import torch
+from transformers import AutoTokenizer
 
 dir = r"./storage/data"
 #dir = r"D:\DaiHoc\folderrr"
@@ -20,7 +20,7 @@ class PdfChunks:
 
     def __init__(
         self,
-        llm_tokenizor_file_path="./models/llm/tinyllama-1.1b-q4f16-MLC/tokenizer.model",
+        llm_tokenizor_file_path="./models/llm/Llama-3.2-1B-q4f16_1-MLC",
         embedding_model_path="./models/embedding/multilingual-e5-base",
         similarity_threshold=0.85,
         max_chars=900,
@@ -45,7 +45,7 @@ class PdfChunks:
         self.nlp = spacy.blank(lang)
         self.nlp.add_pipe("sentencizer")
 
-        self.tokenizor = spm.SentencePieceProcessor(model_file=llm_tokenizor_file_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(llm_tokenizor_file_path)
 
         self.collection = vectorDB_collection_name
         self.client = QdrantClient(url=vectorDB_url)
@@ -105,7 +105,7 @@ class PdfChunks:
             # Content
             "language": "vi",
             "content_hash": content_hash,
-            "num_tokens": len(self.tokenizor.Encode(current_text, out_type=int, add_bos=False, add_eos=False)),
+            "num_tokens": len(self.tokenizer.encode(current_text, out_type=int, add_bos=False, add_eos=False)),
 
             # Versioning
             "chunk_version": self.CHUNK_VERSION,

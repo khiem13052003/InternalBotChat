@@ -1,4 +1,5 @@
 sentence-transformers
+transformers
 unstructured[pdf]
 unstructured-inference
 pdfplumber
@@ -8,4 +9,3 @@ pytesseract
 pyvi
 spacy
 qdrant-client
-sentencepiece
